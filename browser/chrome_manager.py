@@ -66,8 +66,9 @@ class ChromeManager:
     def launch_chrome(self) -> bool:
         """Launch Chrome with --remote-debugging-port.
 
-        If a debugging port is already open, reuse the existing Chrome instance.
-        Otherwise, close existing Chrome and relaunch with the debug flag.
+        If a debugging port is already open, reuse that instance.
+        Otherwise, launch a NEW Chrome instance alongside any existing one
+        using a separate temporary profile (does NOT close existing Chrome).
         Returns True if Chrome is running with the debug port.
         """
         # Check if Chrome debugging is already running
@@ -75,20 +76,7 @@ class ChromeManager:
             logger.info("Chrome debugging already active on port %d, reusing", self.port)
             return True
 
-        # Chrome is running without debug port → kill it first
-        try:
-            logger.info("Closing existing Chrome to relaunch with debug port...")
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
-            time.sleep(2)  # Wait for processes to fully terminate
-        except Exception as e:
-            logger.warning("Failed to close existing Chrome: %s", e)
-
-        # Use a temporary profile to avoid session conflicts
+        # Use a temporary profile → allows running alongside user's normal Chrome
         if not self.user_data_dir:
             self.user_data_dir = os.path.join(
                 tempfile.gettempdir(), "webgotool_chrome_profile"
@@ -104,7 +92,7 @@ class ChromeManager:
             "--no-default-browser-check",
         ]
 
-        logger.info("Launching Chrome: %s", " ".join(cmd))
+        logger.info("Launching Chrome with separate profile: %s", " ".join(cmd))
 
         try:
             self.chrome_process = subprocess.Popen(
