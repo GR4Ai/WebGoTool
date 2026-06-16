@@ -1,53 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-
-block_cipher = None
-
-# Collect all submodules from our local packages
-_local_imports = []
-for pkg in ['utils', 'ui', 'browser', 'recorder', 'player', 'flows']:
-    _local_imports.extend(collect_submodules(pkg))
 
 a = Analysis(
     ['main.py'],
-    pathex=['.'],
+    pathex=[],
     binaries=[],
-    datas=[
-        ('resources/*', 'resources'),
-    ],
-    hiddenimports=[
-        'playwright.sync_api',
-        'playwright._impl._api_structures',
-        'playwright._impl._browser_type',
-        'playwright._impl._connection',
-        'playwright._impl._page',
-        'playwright._impl._locator',
-        'PySide6.QtCore',
-        'PySide6.QtGui',
-        'PySide6.QtWidgets',
-        'pandas',
-        'openpyxl',
-        'numpy',
-        'PIL',
-    ] + _local_imports,
+    datas=[('resources/*', 'resources')],
+    hiddenimports=['playwright.sync_api', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'ui', 'ui.mainwindow', 'ui.workflow_editor', 'browser', 'browser.chrome_manager', 'browser.cdp_client', 'browser.browser_worker', 'recorder', 'recorder.event_recorder', 'player', 'player.workflow_runner', 'flows', 'flows.schema', 'utils', 'utils.logger', 'utils.selector_utils'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'unittest',
-        'email',
-        'http',
-        'xmlrpc',
-        'test',
-        'setuptools',
-        'pip',
-    ],
+    excludes=[],
     noarchive=False,
+    optimize=0,
 )
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -64,8 +31,8 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    target_architecture='x86_64',
+    argv_emulation=False,
+    target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
 )
