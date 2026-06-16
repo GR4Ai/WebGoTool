@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QSplitter,
 )
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QColor, QTextCharFormat, QTextCursor, QFont
 
 from flows.schema import WorkflowModel, WorkflowStep
@@ -57,7 +57,6 @@ class MainWindow(QMainWindow):
 
         # State
         self.workflow = WorkflowModel(name="New Workflow")
-        self.worker_thread: QThread | None = None
         self.browser_worker: BrowserWorker | None = None
         self.is_recording = False
         self.is_playing = False
@@ -65,7 +64,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_shortcuts()
-        self._setup_worker_thread()
+        self._setup_worker()
 
         logger.info("MainWindow initialized")
 
@@ -191,11 +190,9 @@ class MainWindow(QMainWindow):
     # Worker Thread
     # ═══════════════════════════════════════════════════════════
 
-    def _setup_worker_thread(self):
-        """Create and start the browser worker thread."""
-        self.worker_thread = QThread()
+    def _setup_worker(self):
+        """Create BrowserWorker (runs in main thread — no QThread)."""
         self.browser_worker = BrowserWorker()
-        self.browser_worker.moveToThread(self.worker_thread)
 
         # Connect worker signals → UI slots
         self.browser_worker.log_signal.connect(self._on_log)
@@ -210,19 +207,12 @@ class MainWindow(QMainWindow):
         self.browser_worker.playback_step_done.connect(self._on_playback_step_done)
         self.browser_worker.playback_finished.connect(self._on_playback_done)
 
-        # Thread lifecycle
-        self.worker_thread.finished.connect(self.browser_worker.deleteLater)
-
-        self.worker_thread.start()
-        logger.info("Worker thread started")
+        logger.info("BrowserWorker initialized (main thread)")
 
     def closeEvent(self, event):
         """Clean up when window closes."""
         if self.browser_worker:
             self.browser_worker.stop_all()
-        if self.worker_thread and self.worker_thread.isRunning():
-            self.worker_thread.quit()
-            self.worker_thread.wait(3000)
         event.accept()
 
     # ═══════════════════════════════════════════════════════════
@@ -234,7 +224,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connecting...")
         self.append_log("Connecting to Chrome...")
         if self.browser_worker:
-            QTimer.singleShot(0, self.browser_worker.connect_browser)
+            self.browser_worker.connect_browser()
 
     def on_record_clicked(self):
         """Toggle recording mode."""
@@ -250,7 +240,7 @@ class MainWindow(QMainWindow):
             self.btn_capture.setEnabled(False)
             self.status_label.setText("Recording...")
             self.append_log("● Recording started")
-            QTimer.singleShot(0, self.browser_worker.start_recording)
+            self.browser_worker.start_recording)
         else:
             self._stop_recording()
 
@@ -282,9 +272,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Running...")
         self.append_log("▶ Running workflow...")
 
-        QTimer.singleShot(0, lambda: self.browser_worker.run_workflow(
-            self.workflow.to_dict()
-        ))
+        self.browser_worker.run_workflow(self.workflow.to_dict())
 
     def on_capture_clicked(self):
         """Toggle element capture mode."""
@@ -297,11 +285,11 @@ class MainWindow(QMainWindow):
             self.capture_mode = True
             self.status_label.setText("Capture mode — click an element in Chrome")
             self.append_log("🎯 Capture mode ON — click element in Chrome, press Esc to cancel")
-            QTimer.singleShot(0, self.browser_worker.start_capture_mode)
+            self.browser_worker.start_capture_mode)
         else:
             self.capture_mode = False
             self.status_label.setText("Connected")
-            QTimer.singleShot(0, self.browser_worker.stop_capture_mode)
+            self.browser_worker.stop_capture_mode)
 
     def on_save_clicked(self):
         """Save workflow to file."""
@@ -538,7 +526,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connected")
         self.append_log("■ Recording stopped")
         if self.browser_worker:
-            QTimer.singleShot(0, self.browser_worker.stop_recording)
+            self.browser_worker.stop_recording)
 
     def _stop_playback(self):
         """Stop the playback engine."""
@@ -549,7 +537,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connected")
         self.append_log("■ Playback stopped")
         if self.browser_worker:
-            QTimer.singleShot(0, self.browser_worker.stop_workflow)
+            self.browser_worker.stop_workflow)
 
     def _on_name_changed(self, text: str):
         self.workflow.name = text
@@ -641,7 +629,7 @@ class MainWindow(QMainWindow):
 
         self.btn_capture.setChecked(False)
         if self.browser_worker:
-            QTimer.singleShot(0, self.browser_worker.stop_capture_mode)
+            self.browser_worker.stop_capture_mode)
         self.capture_mode = False
         self.status_label.setText("Connected ✓")
 

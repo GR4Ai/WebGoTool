@@ -31,27 +31,67 @@ RECORDER_JS = r"""
     function buildCssSelector(el) {
         if (!el || el.nodeType !== 1) return '';
         if (el.id) return '#' + CSS.escape(el.id);
-        const parts = [];
-        let current = el;
+
+        var tag = el.tagName.toLowerCase();
+        var text = (el.textContent || '').trim().substring(0, 60);
+        // For buttons/links with short text, prefer text-based selector
+        if ((tag === 'button' || tag === 'a') && text.length > 1 && text.length < 60) {
+            try {
+                var txtSel = tag + ':has-text("' + text.replace(/"/g, '\\"') + '")';
+                if (document.querySelectorAll(txtSel).length === 1) return txtSel;
+            } catch(e) {}
+        }
+
+        // Short selector: tag + own key classes
+        var ownClasses = '';
+        if (el.className && typeof el.className === 'string') {
+            var cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+            if (cls.length) ownClasses = '.' + cls.map(function(c) { return CSS.escape(c); }).join('.');
+        }
+        var shortSel = tag + ownClasses;
+        try {
+            if (shortSel !== tag && document.querySelectorAll(shortSel).length === 1) return shortSel;
+        } catch(e) {}
+
+        // Scoped by nth-if-needed
+        var parent = el.parentElement;
+        if (parent) {
+            var sibs = Array.from(parent.children).filter(function(s) { return s.tagName === el.tagName; });
+            if (sibs.length > 1) {
+                var idx = sibs.indexOf(el) + 1;
+                var scoped = shortSel + ':nth-child(' + idx + ')';
+                try {
+                    if (document.querySelectorAll(scoped).length === 1) return scoped;
+                } catch(e) {}
+            }
+        }
+
+        // Fallback: walk up to nearest id or form
+        var parts = [];
+        var current = el;
         while (current && current.nodeType === 1 && current !== document.body) {
-            let sel = current.tagName.toLowerCase();
+            var sel = current.tagName.toLowerCase();
             if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
             if (current.className && typeof current.className === 'string') {
-                const classes = current.className.trim().split(/\s+/).filter(Boolean);
-                if (classes.length) sel += '.' + classes.map(c => CSS.escape(c)).join('.');
+                var cl = current.className.trim().split(/\\s+/).filter(Boolean);
+                if (cl.length) sel += '.' + cl.map(function(c) { return CSS.escape(c); }).join('.');
             }
-            const parent = current.parentElement;
-            if (parent) {
-                const siblings = Array.from(parent.children).filter(s => s.tagName === current.tagName);
-                if (siblings.length > 1) sel += ':nth-child(' + (siblings.indexOf(current)+1) + ')';
+            var p = current.parentElement;
+            if (p) {
+                var cs = Array.from(p.children).filter(function(s) { return s.tagName === current.tagName; });
+                if (cs.length > 1) sel += ':nth-child(' + (cs.indexOf(current)+1) + ')';
             }
             parts.unshift(sel);
             try {
                 if (document.querySelectorAll(parts.join(' > ')).length === 1) break;
             } catch(e) {}
             current = current.parentElement;
+            if (current && (current.tagName === 'FORM' || current.tagName === 'SECTION')) {
+                parts.unshift(current.tagName.toLowerCase());
+                break;
+            }
         }
-        return parts.join(' > ') || '*';
+        return parts.join(' > ') || shortSel || '*';
     }
 
     function buildXPath(el) {
@@ -108,22 +148,24 @@ RECORDER_JS = r"""
         pushEvent(info);
     }, true);
 
-    // --- Input Recording (debounced per element) ---
+    // --- Input Recording (debounce: wait 500ms after last keystroke) ---
+    var __inputTimers = {};
     document.addEventListener('input', function(e) {
         if (!window.__webGoToolRecorderActive) return;
-        const el = e.target;
+        var el = e.target;
         if (!el || !el.matches('input,textarea,[contenteditable="true"]')) return;
-        // Debounce marker
-        const key = '__wgt_lastInput';
-        if (el[key]) return;  // Already queued for this element
-        el[key] = true;
-        setTimeout(function() { el[key] = false; }, 500);
-        const info = getElementInfo(el);
-        if (!info) return;
-        info.value = el.value || el.textContent || '';
-        info.event = 'input';
-        info.timestamp = Date.now();
-        pushEvent(info);
+        // Cancel previous timer for this element — we want the FINAL value
+        var key = el.id || el.name || el.className || 'anon';
+        if (__inputTimers[key]) { clearTimeout(__inputTimers[key]); }
+        __inputTimers[key] = setTimeout(function() {
+            var info = getElementInfo(el);
+            if (!info) return;
+            info.value = el.value || el.textContent || '';
+            info.event = 'input';
+            info.timestamp = Date.now();
+            pushEvent(info);
+            delete __inputTimers[key];
+        }, 500);
     }, true);
 
     // --- Change Recording ---
@@ -165,27 +207,67 @@ CAPTURE_OVERLAY_JS = r"""
     function buildCssSelector(el) {
         if (!el || el.nodeType !== 1) return '';
         if (el.id) return '#' + CSS.escape(el.id);
-        const parts = [];
-        let current = el;
+
+        var tag = el.tagName.toLowerCase();
+        var text = (el.textContent || '').trim().substring(0, 60);
+        // For buttons/links with short text, prefer text-based selector
+        if ((tag === 'button' || tag === 'a') && text.length > 1 && text.length < 60) {
+            try {
+                var txtSel = tag + ':has-text("' + text.replace(/"/g, '\\"') + '")';
+                if (document.querySelectorAll(txtSel).length === 1) return txtSel;
+            } catch(e) {}
+        }
+
+        // Short selector: tag + own key classes
+        var ownClasses = '';
+        if (el.className && typeof el.className === 'string') {
+            var cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+            if (cls.length) ownClasses = '.' + cls.map(function(c) { return CSS.escape(c); }).join('.');
+        }
+        var shortSel = tag + ownClasses;
+        try {
+            if (shortSel !== tag && document.querySelectorAll(shortSel).length === 1) return shortSel;
+        } catch(e) {}
+
+        // Scoped by nth-if-needed
+        var parent = el.parentElement;
+        if (parent) {
+            var sibs = Array.from(parent.children).filter(function(s) { return s.tagName === el.tagName; });
+            if (sibs.length > 1) {
+                var idx = sibs.indexOf(el) + 1;
+                var scoped = shortSel + ':nth-child(' + idx + ')';
+                try {
+                    if (document.querySelectorAll(scoped).length === 1) return scoped;
+                } catch(e) {}
+            }
+        }
+
+        // Fallback: walk up to nearest id or form
+        var parts = [];
+        var current = el;
         while (current && current.nodeType === 1 && current !== document.body) {
-            let sel = current.tagName.toLowerCase();
+            var sel = current.tagName.toLowerCase();
             if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
             if (current.className && typeof current.className === 'string') {
-                const classes = current.className.trim().split(/\s+/).filter(Boolean);
-                if (classes.length) sel += '.' + classes.map(c => CSS.escape(c)).join('.');
+                var cl = current.className.trim().split(/\\s+/).filter(Boolean);
+                if (cl.length) sel += '.' + cl.map(function(c) { return CSS.escape(c); }).join('.');
             }
-            const parent = current.parentElement;
-            if (parent) {
-                const siblings = Array.from(parent.children).filter(s => s.tagName === current.tagName);
-                if (siblings.length > 1) sel += ':nth-child(' + (siblings.indexOf(current)+1) + ')';
+            var p = current.parentElement;
+            if (p) {
+                var cs = Array.from(p.children).filter(function(s) { return s.tagName === current.tagName; });
+                if (cs.length > 1) sel += ':nth-child(' + (cs.indexOf(current)+1) + ')';
             }
             parts.unshift(sel);
             try {
                 if (document.querySelectorAll(parts.join(' > ')).length === 1) break;
             } catch(e) {}
             current = current.parentElement;
+            if (current && (current.tagName === 'FORM' || current.tagName === 'SECTION')) {
+                parts.unshift(current.tagName.toLowerCase());
+                break;
+            }
         }
-        return parts.join(' > ') || '*';
+        return parts.join(' > ') || shortSel || '*';
     }
 
     function buildXPath(el) {

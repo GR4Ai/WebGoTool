@@ -157,23 +157,67 @@ class WorkflowRunner:
         self.page.goto(url, wait_until=wait_until, timeout=30000)
         return True, f"Navigated to {url}"
 
+    def _try_locator(self, step: WorkflowStep, timeout: int = 5000):
+        """Try the primary selector. If it fails and is a long CSS path,
+        try shorter fallbacks (text-based, tag+class)."""
+        sel = self._get_selector(step)
+        loc = self.page.locator(sel)
+        try:
+            loc.wait_for(state="attached", timeout=timeout)
+            return loc
+        except PlaywrightTimeoutError:
+            pass
+
+        # Build fallback selectors
+        fallbacks = []
+        desc = step.description or step.params.get("value", "")
+        txt = (step.params.get("value", "") or desc).strip()
+        params = step.params
+
+        # Text-based fallback for click actions
+        if step.action == "click" and txt and len(txt) < 80:
+            fallbacks.append(f"text={txt}")
+            fallbacks.append(f":has-text('{txt}')")
+            fallbacks.append(f"button:has-text('{txt}')")
+            fallbacks.append(f"a:has-text('{txt}')")
+
+        # Tag+class short fallback from the long selector
+        if " " in sel or ">" in sel or sel.count(".") > 2:
+            # Extract tag and key classes
+            import re
+            m = re.match(r'(\w+)\.([\w-]+)', sel)
+            if m:
+                fallbacks.append(f"{m.group(1)}.{m.group(2)}")
+
+        for fb in fallbacks[:5]:
+            try:
+                fbloc = self.page.locator(fb)
+                fbloc.wait_for(state="attached", timeout=timeout)
+                self._emit_log(f"Used fallback selector: {fb}")
+                return fbloc
+            except PlaywrightTimeoutError:
+                continue
+
+        # Return original (will fail with original error)
+        return loc
+
     def _execute_click(self, step: WorkflowStep) -> tuple[bool, str]:
         sel = self._get_selector(step)
         timeout = step.params.get("timeout", 5000)
         force = step.params.get("force", False)
-        self.page.locator(sel).click(timeout=timeout, force=force)
+        loc = self._try_locator(step, timeout)
+        loc.click(timeout=timeout, force=force)
         return True, f"Clicked {sel}"
 
     def _execute_input(self, step: WorkflowStep) -> tuple[bool, str]:
         sel = self._get_selector(step)
         value = self._resolve_value(step.params.get("value", ""))
         clear = step.params.get("clear", True)
-        delay = step.params.get("delay", 0)
 
-        locator = self.page.locator(sel)
+        loc = self._try_locator(step)
         if clear:
-            locator.fill("")
-        locator.fill(value)
+            loc.fill("")
+        loc.fill(value)
 
         return True, f"Input \"{value}\" → {sel}"
 
