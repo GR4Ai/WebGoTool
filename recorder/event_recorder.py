@@ -45,7 +45,7 @@ RECORDER_JS = r"""
         // Short selector: tag + own key classes
         var ownClasses = '';
         if (el.className && typeof el.className === 'string') {
-            var cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+            var cls = el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2);
             if (cls.length) ownClasses = '.' + cls.map(function(c) { return CSS.escape(c); }).join('.');
         }
         var shortSel = tag + ownClasses;
@@ -73,7 +73,7 @@ RECORDER_JS = r"""
             var sel = current.tagName.toLowerCase();
             if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
             if (current.className && typeof current.className === 'string') {
-                var cl = current.className.trim().split(/\\s+/).filter(Boolean);
+                var cl = current.className.trim().split(/\s+/).filter(Boolean);
                 if (cl.length) sel += '.' + cl.map(function(c) { return CSS.escape(c); }).join('.');
             }
             var p = current.parentElement;
@@ -221,7 +221,7 @@ CAPTURE_OVERLAY_JS = r"""
         // Short selector: tag + own key classes
         var ownClasses = '';
         if (el.className && typeof el.className === 'string') {
-            var cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+            var cls = el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2);
             if (cls.length) ownClasses = '.' + cls.map(function(c) { return CSS.escape(c); }).join('.');
         }
         var shortSel = tag + ownClasses;
@@ -249,7 +249,7 @@ CAPTURE_OVERLAY_JS = r"""
             var sel = current.tagName.toLowerCase();
             if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
             if (current.className && typeof current.className === 'string') {
-                var cl = current.className.trim().split(/\\s+/).filter(Boolean);
+                var cl = current.className.trim().split(/\s+/).filter(Boolean);
                 if (cl.length) sel += '.' + cl.map(function(c) { return CSS.escape(c); }).join('.');
             }
             var p = current.parentElement;
