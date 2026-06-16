@@ -3,7 +3,7 @@
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['C:\\Users\\Administrator\\Desktop\\WebGoTool'],
     binaries=[],
     datas=[('resources/*', 'resources')],
     hiddenimports=['playwright.sync_api', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'ui', 'ui.mainwindow', 'ui.workflow_editor', 'browser', 'browser.chrome_manager', 'browser.cdp_client', 'browser.browser_worker', 'recorder', 'recorder.event_recorder', 'player', 'player.workflow_runner', 'flows', 'flows.schema', 'utils', 'utils.logger', 'utils.selector_utils'],

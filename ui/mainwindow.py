@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
             self.btn_capture.setEnabled(False)
             self.status_label.setText("Recording...")
             self.append_log("● Recording started")
-            self.browser_worker.start_recording)
+            self.browser_worker.start_recording()
         else:
             self._stop_recording()
 
@@ -285,11 +285,11 @@ class MainWindow(QMainWindow):
             self.capture_mode = True
             self.status_label.setText("Capture mode — click an element in Chrome")
             self.append_log("🎯 Capture mode ON — click element in Chrome, press Esc to cancel")
-            self.browser_worker.start_capture_mode)
+            self.browser_worker.start_capture_mode()
         else:
             self.capture_mode = False
             self.status_label.setText("Connected")
-            self.browser_worker.stop_capture_mode)
+            self.browser_worker.stop_capture_mode()
 
     def on_save_clicked(self):
         """Save workflow to file."""
@@ -526,7 +526,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connected")
         self.append_log("■ Recording stopped")
         if self.browser_worker:
-            self.browser_worker.stop_recording)
+            self.browser_worker.stop_recording()
 
     def _stop_playback(self):
         """Stop the playback engine."""
@@ -537,7 +537,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connected")
         self.append_log("■ Playback stopped")
         if self.browser_worker:
-            self.browser_worker.stop_workflow)
+            self.browser_worker.stop_workflow()
 
     def _on_name_changed(self, text: str):
         self.workflow.name = text
@@ -629,7 +629,7 @@ class MainWindow(QMainWindow):
 
         self.btn_capture.setChecked(False)
         if self.browser_worker:
-            self.browser_worker.stop_capture_mode)
+            self.browser_worker.stop_capture_mode()
         self.capture_mode = False
         self.status_label.setText("Connected ✓")
 
