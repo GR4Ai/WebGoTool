@@ -1,7 +1,9 @@
 """Event Recorder — injects JS into the page to capture user interactions.
 
-Uses page.expose_function() for JS→Python callbacks.
-Supports: click recording, input recording, element capture overlay.
+Uses a polling-based approach instead of expose_function:
+- JS stores events in window.__wgt_eventQueue
+- Python polls via page.evaluate() to drain the queue
+This avoids Playwright's greenlet cross-thread issue with expose_function.
 """
 
 from __future__ import annotations
@@ -17,13 +19,14 @@ from flows.schema import WorkflowStep
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
-# JavaScript: Recorder injection
+# JavaScript: Recorder injection (polling-based, no expose_function)
 # ═══════════════════════════════════════════════════════════════
 
 RECORDER_JS = r"""
 (function() {
     if (window.__webGoToolRecorderInstalled) return;
     window.__webGoToolRecorderInstalled = true;
+    window.__wgt_eventQueue = [];  // Python polls this array
 
     function buildCssSelector(el) {
         if (!el || el.nodeType !== 1) return '';
@@ -91,35 +94,39 @@ RECORDER_JS = r"""
         return info;
     }
 
+    function pushEvent(info) {
+        window.__wgt_eventQueue.push(info);
+    }
+
     // --- Click Recording ---
     document.addEventListener('click', function(e) {
         if (!window.__webGoToolRecorderActive) return;
         const info = getElementInfo(e.target);
         if (!info) return;
-        info.timestamp = Date.now();
         info.event = 'click';
-        window.__webGoTool_onEvent(JSON.stringify(info));
+        info.timestamp = Date.now();
+        pushEvent(info);
     }, true);
 
-    // --- Input Recording ---
+    // --- Input Recording (debounced per element) ---
     document.addEventListener('input', function(e) {
         if (!window.__webGoToolRecorderActive) return;
         const el = e.target;
         if (!el || !el.matches('input,textarea,[contenteditable="true"]')) return;
+        // Debounce marker
+        const key = '__wgt_lastInput';
+        if (el[key]) return;  // Already queued for this element
+        el[key] = true;
+        setTimeout(function() { el[key] = false; }, 500);
         const info = getElementInfo(el);
         if (!info) return;
         info.value = el.value || el.textContent || '';
-        info.timestamp = Date.now();
         info.event = 'input';
-        // Debounce: mark the last input event per element
-        if (el.__wgt_lastEvent) clearTimeout(el.__wgt_lastEvent);
-        el.__wgt_lastEvent = setTimeout(function() {
-            window.__webGoTool_onEvent(JSON.stringify(info));
-            el.__wgt_lastEvent = null;
-        }, 300);
+        info.timestamp = Date.now();
+        pushEvent(info);
     }, true);
 
-    // --- Change Recording (select, checkbox, radio) ---
+    // --- Change Recording ---
     document.addEventListener('change', function(e) {
         if (!window.__webGoToolRecorderActive) return;
         const el = e.target;
@@ -127,24 +134,26 @@ RECORDER_JS = r"""
         const info = getElementInfo(el);
         if (!info) return;
         info.value = el.value || (el.checked ? 'checked' : 'unchecked');
-        info.timestamp = Date.now();
         info.event = 'change';
-        window.__webGoTool_onEvent(JSON.stringify(info));
+        info.timestamp = Date.now();
+        pushEvent(info);
     }, true);
+
+    console.log('[WebGoTool] Recorder JS installed (polling mode)');
 })();
 """
 
 # ═══════════════════════════════════════════════════════════════
-# JavaScript: Element capture overlay
+# JavaScript: Element capture overlay (polling-based)
 # ═══════════════════════════════════════════════════════════════
 
 CAPTURE_OVERLAY_JS = r"""
 (function() {
-    // Remove stale overlay
     const old = document.getElementById('__wgt_overlay');
     if (old) old.remove();
 
     window.__wgt_capture_active = true;
+    window.__wgt_capture_data = null;  // Python polls this
 
     const overlay = document.createElement('div');
     overlay.id = '__wgt_overlay';
@@ -208,7 +217,9 @@ CAPTURE_OVERLAY_JS = r"""
             el.__wgt_outline = el.style.outline;
             el.style.outline = '2px solid #FF4444';
             lastEl = el;
+
             const info = {
+                _type: 'hover',
                 tag: el.tagName ? el.tagName.toLowerCase() : '',
                 id: el.id || '',
                 className: (typeof el.className === 'string') ? el.className : '',
@@ -223,7 +234,7 @@ CAPTURE_OVERLAY_JS = r"""
                 const v = el.getAttribute(a);
                 if (v) info.attributes[a] = v;
             });
-            window.__webGoTool_onHover(JSON.stringify(info));
+            window.__wgt_capture_data = JSON.stringify(info);
         }
     });
 
@@ -235,6 +246,7 @@ CAPTURE_OVERLAY_JS = r"""
         const el = document.elementFromPoint(e.clientX, e.clientY);
         if (el && el !== overlay) {
             const info = {
+                _type: 'capture',
                 tag: el.tagName ? el.tagName.toLowerCase() : '',
                 id: el.id || '',
                 name: el.getAttribute('name') || '',
@@ -251,7 +263,7 @@ CAPTURE_OVERLAY_JS = r"""
                 const v = el.getAttribute(a);
                 if (v) info.attributes[a] = v;
             });
-            window.__webGoTool_onCapture(JSON.stringify(info));
+            window.__wgt_capture_data = JSON.stringify(info);
         }
         cleanup();
     }, true);
@@ -260,17 +272,22 @@ CAPTURE_OVERLAY_JS = r"""
         window.__wgt_capture_active = false;
         if (lastEl) { lastEl.style.outline = lastEl.__wgt_outline || ''; lastEl = null; }
         if (overlay.parentNode) overlay.remove();
+        // Mark capture as cancelled if no capture event was set
+        if (!window.__wgt_capture_data || JSON.parse(window.__wgt_capture_data)._type !== 'capture') {
+            window.__wgt_capture_data = JSON.stringify({_type: 'cancel'});
+        }
     }
 
     document.addEventListener('keydown', function handler(e) {
         if (e.key === 'Escape') {
-            window.__webGoTool_onCancel();
+            window.__wgt_capture_data = JSON.stringify({_type: 'cancel'});
             cleanup();
             document.removeEventListener('keydown', handler);
         }
     });
 
     document.body.appendChild(overlay);
+    console.log('[WebGoTool] Capture overlay installed');
 })();
 """
 
@@ -282,9 +299,11 @@ CLEANUP_JS = """
 (function() {
     window.__webGoToolRecorderActive = false;
     window.__webGoToolRecorderInstalled = false;
+    window.__wgt_eventQueue = [];
+    window.__wgt_capture_data = null;
+    window.__wgt_capture_active = false;
     const overlay = document.getElementById('__wgt_overlay');
     if (overlay) overlay.remove();
-    // Clean up outlines
     const all = document.querySelectorAll('*');
     for (let el of all) {
         if (el.__wgt_outline !== undefined) {
@@ -297,7 +316,7 @@ CLEANUP_JS = """
 
 
 class EventRecorder:
-    """Injects JS into the page and receives interaction callbacks."""
+    """Injects JS into the page and polls for interaction events."""
 
     def __init__(self, page: Page):
         self.page = page
@@ -313,8 +332,7 @@ class EventRecorder:
         self.on_log: Callable[[str], None] | None = None
         self.on_error: Callable[[str], None] | None = None
 
-        # Track if functions are exposed
-        self._functions_exposed = False
+        self._js_installed = False
 
     # ═══════════════════════════════════════════════════════════
     # Recording
@@ -326,13 +344,19 @@ class EventRecorder:
             return
 
         self.recorded_steps = []
-        self._expose_functions_if_needed()
 
-        # Activate recorder
-        self.page.evaluate("window.__webGoToolRecorderActive = true;")
-        self.page.evaluate(RECORDER_JS)
+        # Install recorder JS if not already on this page
+        if not self._js_installed:
+            self.page.evaluate(RECORDER_JS)
+            self._js_installed = True
+
+        # Clear any stale events and activate
+        self.page.evaluate("""
+            window.__wgt_eventQueue = [];
+            window.__webGoToolRecorderActive = true;
+        """)
         self.is_recording = True
-        logger.info("Recorder JS injected and active")
+        logger.info("Recorder JS injected and active (polling mode)")
 
     def stop_recording(self) -> list[WorkflowStep]:
         """Deactivate recorder and return captured steps."""
@@ -340,6 +364,10 @@ class EventRecorder:
             return self.recorded_steps
 
         self.is_recording = False
+
+        # Drain any remaining events from the queue
+        self._drain_event_queue()
+
         try:
             self.page.evaluate("window.__webGoToolRecorderActive = false;")
         except Exception:
@@ -350,90 +378,39 @@ class EventRecorder:
         logger.info("Recording stopped — %d steps", len(steps))
         return steps
 
-    # ═══════════════════════════════════════════════════════════
-    # Element Capture Overlay
-    # ═══════════════════════════════════════════════════════════
-
-    def inject_capture_overlay(self):
-        """Inject the element capture overlay."""
-        self._expose_functions_if_needed()
-        self.page.evaluate(CAPTURE_OVERLAY_JS)
-        self._capture_active = True
-        logger.info("Capture overlay injected")
-
-    def remove_capture_overlay(self):
-        """Remove the capture overlay."""
-        self._capture_active = False
+    def _drain_event_queue(self):
+        """Poll the JS event queue and process pending events."""
+        if not self._js_installed:
+            return
         try:
-            self.page.evaluate(CLEANUP_JS)
+            events_json = self.page.evaluate(
+                "JSON.stringify(window.__wgt_eventQueue || []);"
+            )
+            self.page.evaluate("window.__wgt_eventQueue = [];")
+
+            if events_json:
+                events = json.loads(events_json)
+                for info in events:
+                    self._process_event(info)
         except Exception as e:
-            logger.warning("Cleanup JS error: %s", e)
+            pass  # Page might be in transition
 
-    # ═══════════════════════════════════════════════════════════
-    # Internal: expose_function
-    # ═══════════════════════════════════════════════════════════
-
-    def _expose_functions_if_needed(self):
-        """Register JS→Python callback functions via expose_function."""
-        if self._functions_exposed:
-            return
-
-        try:
-            self.page.expose_function(
-                "__webGoTool_onEvent", self._handle_event
-            )
-            self.page.expose_function(
-                "__webGoTool_onHover", self._handle_hover
-            )
-            self.page.expose_function(
-                "__webGoTool_onCapture", self._handle_capture
-            )
-            self.page.expose_function(
-                "__webGoTool_onCancel", self._handle_cancel
-            )
-            self._functions_exposed = True
-            logger.info("JS callback functions exposed")
-        except Exception as e:
-            # Functions might already be exposed from a previous injection
-            logger.warning("expose_function may have failed (already exposed?): %s", e)
-            self._functions_exposed = True
-
-    # ═══════════════════════════════════════════════════════════
-    # Callback handlers
-    # ═══════════════════════════════════════════════════════════
-
-    def _handle_event(self, step_json: str):
-        """Callback from JS: parse event info, create WorkflowStep."""
-        if not self.is_recording:
-            return
-
-        try:
-            info = json.loads(step_json)
-        except json.JSONDecodeError:
-            logger.warning("Malformed event JSON: %s", step_json[:100])
-            return
-
+    def _process_event(self, info: dict):
+        """Process a single event from the JS queue."""
         event_type = info.get("event", "click")
         tag = info.get("tag", "")
         el_type = info.get("type", "")
 
         # Determine action from event + element
-        if event_type == "input" or event_type == "change":
+        if event_type in ("input", "change"):
             if tag in ("input", "textarea") or el_type in ("text", "password", "email", "number", "search"):
                 action = "input"
             elif tag == "select":
                 action = "input"
-            elif el_type in ("checkbox", "radio"):
-                action = "click"
             else:
-                action = "input"
+                action = "click"
         else:  # click
-            if tag in ("a", "button") or el_type in ("submit", "button", "reset"):
-                action = "click"
-            elif tag == "select":
-                action = "input"
-            else:
-                action = "click"
+            action = "click"
 
         # Build selector
         sel = ""
@@ -451,7 +428,7 @@ class EventRecorder:
                 "selectorType": "css",
                 "value": info.get("value", ""),
             },
-            description=info.get("text", "") or f"{info.get('tag','')}>{info.get('id','')}",
+            description=info.get("text", "") or f"{info.get('tag','')}#{info.get('id','')}",
         )
 
         self.recorded_steps.append(step)
@@ -460,27 +437,67 @@ class EventRecorder:
         if self.on_step_recorded:
             self.on_step_recorded(step)
 
-    def _handle_hover(self, element_json: str):
-        """Callback from capture overlay: element hover."""
+    # ═══════════════════════════════════════════════════════════
+    # Element Capture Overlay
+    # ═══════════════════════════════════════════════════════════
+
+    def inject_capture_overlay(self):
+        """Inject the element capture overlay."""
+        self.page.evaluate(CAPTURE_OVERLAY_JS)
+        self._js_installed = False  # Reset so recorder can be re-installed later
+        self._capture_active = True
+        logger.info("Capture overlay injected (polling mode)")
+
+    def remove_capture_overlay(self):
+        """Remove the capture overlay."""
+        self._capture_active = False
         try:
-            info = json.loads(element_json)
-            if self.on_hover:
-                self.on_hover(info)
-        except json.JSONDecodeError:
+            self.page.evaluate(CLEANUP_JS)
+        except Exception:
+            pass
+        self._js_installed = False
+
+    def poll_capture(self):
+        """Check if a capture event happened (called by timer)."""
+        if not self._capture_active:
+            return
+        try:
+            data_json = self.page.evaluate(
+                "JSON.stringify(window.__wgt_capture_data || null);"
+            )
+            if not data_json or data_json == "null":
+                # No event yet, emit latest hover if available
+                return
+
+            info = json.loads(data_json)
+            if not info:
+                return
+
+            msg_type = info.get("_type", "")
+
+            if msg_type == "capture":
+                # Clear so we don't re-emit
+                self.page.evaluate("window.__wgt_capture_data = null;")
+                self._capture_active = False
+                if self.on_capture:
+                    self.on_capture(info)
+
+            elif msg_type == "cancel":
+                self.page.evaluate("window.__wgt_capture_data = null;")
+                self._capture_active = False
+                if self.on_cancel:
+                    self.on_cancel()
+
+            elif msg_type == "hover":
+                if self.on_hover:
+                    self.on_hover(info)
+
+        except Exception:
             pass
 
-    def _handle_capture(self, element_json: str):
-        """Callback from capture overlay: element confirmed (click)."""
-        try:
-            info = json.loads(element_json)
-            logger.info("Element captured: %s", info.get("cssSelector", ""))
-            if self.on_capture:
-                self.on_capture(info)
-        except json.JSONDecodeError:
-            pass
-
-    def _handle_cancel(self):
-        """Callback from capture overlay: Escape pressed."""
-        logger.info("Capture cancelled via Escape")
-        if self.on_cancel:
-            self.on_cancel()
+    def poll_recording(self):
+        """Called by BrowserWorker timer to flush event queue during recording."""
+        if self.is_recording:
+            self._drain_event_queue()
+        if self._capture_active:
+            self.poll_capture()

@@ -42,12 +42,7 @@ class BrowserWorker(QObject):
         self._runner = None
         self._page = None
         self.is_connected = False
-
-        # Polling timer to flush Playwright callback queue during recording/capture
-        self._poll_timer = QTimer()
-        self._poll_timer.setInterval(200)  # 200ms
-        self._poll_timer.timeout.connect(self._poll_playwright)
-        self._poll_timer.start()  # Always run; no-op when not recording/capturing
+        self._poll_timer = None  # Created after moveToThread, in connect_browser
 
     # ═══════════════════════════════════════════════════════════
     # Browser Connection
@@ -71,6 +66,14 @@ class BrowserWorker(QObject):
 
             self._page = self._chrome_manager.page
             self.is_connected = True
+
+            # Create polling timer in THIS thread (worker thread, after moveToThread)
+            if self._poll_timer is None:
+                self._poll_timer = QTimer()
+                self._poll_timer.setInterval(200)
+                self._poll_timer.timeout.connect(self._poll_playwright)
+                self._poll_timer.start()
+
             self.connected.emit()
             self.log_signal.emit(f"Connected to Chrome — {self._page.url}")
 
@@ -246,25 +249,21 @@ class BrowserWorker(QObject):
     # ═══════════════════════════════════════════════════════════
 
     def _poll_playwright(self):
-        """Periodically call a Playwright method to flush the callback queue.
+        """Periodically drain the JS event queue during recording/capture mode.
 
-        Playwright sync API processes JS→Python callbacks (from expose_function)
-        only when the thread enters a Playwright method. This timer ensures
-        callbacks fire promptly during recording/capture mode.
+        Uses recorder's poll methods which read from JS-side arrays
+        (no expose_function callbacks = no greenlet cross-thread issues).
         """
         if not self.is_connected or not self._page:
             return
-        recording = self._recorder and self._recorder.is_recording
-        capture = (self._recorder and
-                   hasattr(self._recorder, '_capture_active') and
-                   self._recorder._capture_active)
-        if not recording and not capture:
+        recorder = self._recorder
+        if recorder is None:
             return
         try:
-            # Flush the callback queue — any pending JS→Python calls fire now
-            self._page.evaluate("1")
+            recorder.poll_recording()  # Drains __wgt_eventQueue if recording
+            recorder.poll_capture()    # Checks __wgt_capture_data if capturing
         except Exception:
-            pass  # Page might be navigating, ignore transient errors
+            pass  # Page might be navigating
 
     @Slot()
     def stop_all(self):
