@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ class BrowserWorker(QObject):
         self._runner = None
         self._page = None
         self.is_connected = False
+
+        # Polling timer to flush Playwright callback queue during recording/capture
+        self._poll_timer = QTimer()
+        self._poll_timer.setInterval(200)  # 200ms
+        self._poll_timer.timeout.connect(self._poll_playwright)
+        self._poll_timer.start()  # Always run; no-op when not recording/capturing
 
     # ═══════════════════════════════════════════════════════════
     # Browser Connection
@@ -239,9 +245,31 @@ class BrowserWorker(QObject):
     # Lifecycle
     # ═══════════════════════════════════════════════════════════
 
+    def _poll_playwright(self):
+        """Periodically call a Playwright method to flush the callback queue.
+
+        Playwright sync API processes JS→Python callbacks (from expose_function)
+        only when the thread enters a Playwright method. This timer ensures
+        callbacks fire promptly during recording/capture mode.
+        """
+        if not self.is_connected or not self._page:
+            return
+        recording = self._recorder and self._recorder.is_recording
+        capture = (self._recorder and
+                   hasattr(self._recorder, '_capture_active') and
+                   self._recorder._capture_active)
+        if not recording and not capture:
+            return
+        try:
+            # Flush the callback queue — any pending JS→Python calls fire now
+            self._page.evaluate("1")
+        except Exception:
+            pass  # Page might be navigating, ignore transient errors
+
     @Slot()
     def stop_all(self):
         """Stop all active operations."""
+        self._poll_timer.stop()
         if self._recorder:
             try:
                 self._recorder.stop_recording()

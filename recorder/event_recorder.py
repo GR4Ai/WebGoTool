@@ -302,6 +302,7 @@ class EventRecorder:
     def __init__(self, page: Page):
         self.page = page
         self.is_recording = False
+        self._capture_active = False
         self.recorded_steps: list[WorkflowStep] = []
 
         # Callbacks (set by BrowserWorker)
@@ -357,10 +358,12 @@ class EventRecorder:
         """Inject the element capture overlay."""
         self._expose_functions_if_needed()
         self.page.evaluate(CAPTURE_OVERLAY_JS)
+        self._capture_active = True
         logger.info("Capture overlay injected")
 
     def remove_capture_overlay(self):
         """Remove the capture overlay."""
+        self._capture_active = False
         try:
             self.page.evaluate(CLEANUP_JS)
         except Exception as e:
